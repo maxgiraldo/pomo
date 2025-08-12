@@ -28,6 +28,21 @@ Or with the built binary:
 ./target/release/pomo start
 ```
 
+### Custom Duration
+
+Set custom work session duration:
+```bash
+cargo run start --duration 25m    # 25 minutes (default)
+cargo run start --duration 30s    # 30 seconds
+cargo run start --duration 1m30s  # 1 minute 30 seconds
+cargo run start --duration 5      # 5 minutes (backward compatible)
+```
+
+### Options
+
+- `--duration <time>` - Set work session duration (formats: 25m, 30s, 1m30s, or plain number for minutes)
+- `--no-music` - Disable audio hooks and system beeps
+
 ## Configuration
 
 Pomo creates a configuration file at `~/.config/pomo/config.json` with customizable hooks:
