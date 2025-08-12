@@ -31,8 +31,35 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     
     if args.len() < 2 || args[1] != "start" {
-        println!("Usage: pomo start");
+        println!("Usage: pomo start [--duration <time>] [--no-music]");
+        println!("  <time> format: 25m, 30s, 1m30s");
         return;
+    }
+    
+    let no_music = args.contains(&"--no-music".to_string());
+    
+    // Parse duration flag
+    let mut duration_seconds = 25 * 60; // default 25 minutes in seconds
+    if let Some(duration_index) = args.iter().position(|x| x == "--duration") {
+        if duration_index + 1 < args.len() {
+            match parse_duration(&args[duration_index + 1]) {
+                Ok(seconds) => {
+                    if seconds > 0 {
+                        duration_seconds = seconds;
+                    } else {
+                        println!("Error: Duration must be greater than 0");
+                        return;
+                    }
+                }
+                Err(err) => {
+                    println!("Error: {}", err);
+                    return;
+                }
+            }
+        } else {
+            println!("Error: --duration flag requires a value");
+            return;
+        }
     }
 
     let config = Arc::new(load_config());
@@ -41,15 +68,20 @@ fn main() {
     // Setup Ctrl-C handler
     let config_clone = Arc::clone(&config);
     let state_clone = Arc::clone(&timer_state);
+    let no_music_clone = no_music;
     ctrlc::set_handler(move || {
         let state = state_clone.lock().unwrap();
         println!("\n🛑 Interrupted!");
         match *state {
             TimerState::Work => {
-                execute_hook(&config_clone.hooks.work_end);
+                if !no_music_clone {
+                    execute_hook(&config_clone.hooks.work_end);
+                }
             },
             TimerState::Break => {
-                execute_hook(&config_clone.hooks.break_end);
+                if !no_music_clone {
+                    execute_hook(&config_clone.hooks.break_end);
+                }
             },
             TimerState::Idle => {
                 println!("No hook to execute (idle state)");
@@ -58,26 +90,41 @@ fn main() {
         std::process::exit(0);
     }).expect("Error setting Ctrl-C handler");
 
-    run_pomodoro(config, timer_state);
+    run_pomodoro(config, timer_state, no_music, duration_seconds);
 }
 
-fn run_pomodoro(config: Arc<Config>, timer_state: Arc<Mutex<TimerState>>) {
-    // 25-minute work timer
-    println!("🍅 Starting 25-minute Pomodoro work session...");
+fn run_pomodoro(config: Arc<Config>, timer_state: Arc<Mutex<TimerState>>, no_music: bool, duration_seconds: u64) {
+    // Work timer
+    let duration_display = format_duration(duration_seconds);
+    println!("🍅 Starting {} Pomodoro work session...", duration_display);
     *timer_state.lock().unwrap() = TimerState::Work;
-    execute_hook(&config.hooks.work_start);
-    run_timer(25 * 60);
-    execute_hook(&config.hooks.work_end);
-    system_beep();
+    if !no_music {
+        execute_hook(&config.hooks.work_start);
+    }
+    run_timer(duration_seconds);
+    if !no_music {
+        execute_hook(&config.hooks.work_end);
+        thread::sleep(Duration::from_millis(200)); // Allow time for hook to complete before system beep
+    }
+    if !no_music {
+        system_beep();
+    }
     println!("🍅 Work session complete! Time for a break.");
     
     // 5-minute break timer
     println!("☕ Starting 5-minute break...");
     *timer_state.lock().unwrap() = TimerState::Break;
-    execute_hook(&config.hooks.break_start);
+    if !no_music {
+        execute_hook(&config.hooks.break_start);
+    }
     run_timer(5 * 60);
-    execute_hook(&config.hooks.break_end);
-    system_beep();
+    if !no_music {
+        execute_hook(&config.hooks.break_end);
+        thread::sleep(Duration::from_millis(200)); // Allow time for hook to complete before system beep
+    }
+    if !no_music {
+        system_beep();
+    }
     *timer_state.lock().unwrap() = TimerState::Idle;
     println!("☕ Break complete! Ready for another session?");
 }
@@ -181,24 +228,133 @@ fn execute_hook(hook: &Option<String>) {
     }
 }
 
-fn system_beep() {
-    if cfg!(target_os = "macos") {
-        let _ = Command::new("afplay")
-            .arg("/System/Library/Sounds/Glass.aiff")
-            .spawn()
-            .and_then(|mut child| child.wait());
-    } else if cfg!(target_os = "linux") {
-        let _ = Command::new("paplay")
-            .arg("/usr/share/sounds/alsa/Front_Left.wav")
-            .spawn()
-            .and_then(|mut child| child.wait())
-            .or_else(|_| Command::new("aplay")
-                .arg("/usr/share/sounds/alsa/Front_Left.wav")
-                .spawn()
-                .and_then(|mut child| child.wait()));
+fn parse_duration(input: &str) -> Result<u64, String> {
+    let input = input.trim().to_lowercase();
+    
+    // If it's just a number, treat as minutes for backward compatibility
+    if let Ok(minutes) = input.parse::<u64>() {
+        return Ok(minutes * 60);
     }
     
-    // Fallback: ASCII bell character
-    print!("\x07");
-    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    let mut total_seconds = 0u64;
+    let mut current_number = String::new();
+    
+    for ch in input.chars() {
+        if ch.is_ascii_digit() {
+            current_number.push(ch);
+        } else if ch == 'm' || ch == 's' {
+            if current_number.is_empty() {
+                return Err("Invalid duration format. Use formats like: 25m, 30s, 1m30s".to_string());
+            }
+            
+            let number: u64 = current_number.parse()
+                .map_err(|_| "Invalid number in duration".to_string())?;
+            
+            match ch {
+                'm' => total_seconds += number * 60,
+                's' => total_seconds += number,
+                _ => unreachable!(),
+            }
+            
+            current_number.clear();
+        } else if !ch.is_whitespace() {
+            return Err("Invalid character in duration. Use formats like: 25m, 30s, 1m30s".to_string());
+        }
+    }
+    
+    if !current_number.is_empty() {
+        return Err("Duration must end with 'm' (minutes) or 's' (seconds)".to_string());
+    }
+    
+    if total_seconds == 0 {
+        return Err("Duration must be greater than 0".to_string());
+    }
+    
+    Ok(total_seconds)
+}
+
+fn format_duration(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let remaining_seconds = seconds % 60;
+    
+    if minutes > 0 && remaining_seconds > 0 {
+        format!("{} minute{} {} second{}", 
+            minutes, if minutes == 1 { "" } else { "s" },
+            remaining_seconds, if remaining_seconds == 1 { "" } else { "s" })
+    } else if minutes > 0 {
+        format!("{} minute{}", minutes, if minutes == 1 { "" } else { "s" })
+    } else {
+        format!("{} second{}", remaining_seconds, if remaining_seconds == 1 { "" } else { "s" })
+    }
+}
+
+fn system_beep() {
+    let mut sound_played = false;
+    
+    if cfg!(target_os = "macos") {
+        // Try different macOS system sounds
+        let sounds = [
+            "/System/Library/Sounds/Glass.aiff",
+            "/System/Library/Sounds/Ping.aiff",
+            "/System/Library/Sounds/Pop.aiff",
+            "/System/Library/Sounds/Purr.aiff"
+        ];
+        
+        for sound_path in &sounds {
+            if let Ok(mut child) = Command::new("afplay")
+                .arg(sound_path)
+                .spawn() {
+                if child.wait().is_ok() {
+                    sound_played = true;
+                    break;
+                }
+            }
+        }
+        
+        // Fallback to say command for macOS
+        if !sound_played {
+            if let Ok(mut child) = Command::new("say")
+                .arg("Time up")
+                .spawn() {
+                let _ = child.wait();
+                sound_played = true;
+            }
+        }
+    } else if cfg!(target_os = "linux") {
+        let sounds = [
+            "/usr/share/sounds/alsa/Front_Left.wav",
+            "/usr/share/sounds/sound-icons/bell.wav",
+            "/usr/share/sounds/gnome/default/alerts/glass.ogg"
+        ];
+        
+        for sound_path in &sounds {
+            if let Ok(mut child) = Command::new("paplay")
+                .arg(sound_path)
+                .spawn() {
+                if child.wait().is_ok() {
+                    sound_played = true;
+                    break;
+                }
+            }
+        }
+        
+        if !sound_played {
+            for sound_path in &sounds {
+                if let Ok(mut child) = Command::new("aplay")
+                    .arg(sound_path)
+                    .spawn() {
+                    if child.wait().is_ok() {
+                        sound_played = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Always print the bell character as fallback
+    if !sound_played {
+        print!("\x07");
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    }
 }
