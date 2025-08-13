@@ -134,17 +134,37 @@ fn run_timer(duration_seconds: u64) {
     let total_duration = Duration::from_secs(duration_seconds);
     
     while start_time.elapsed() < total_duration {
-        let remaining = total_duration - start_time.elapsed();
+        let elapsed = start_time.elapsed();
+        let remaining = total_duration - elapsed;
+        
+        // Time formatting
         let minutes = remaining.as_secs() / 60;
         let seconds = remaining.as_secs() % 60;
         
-        print!("\r⏱️  {:02}:{:02} remaining", minutes, seconds);
+        // Progress calculation
+        let progress_ratio = elapsed.as_secs_f64() / total_duration.as_secs_f64();
+        let percentage = (progress_ratio * 100.0) as u8;
+        
+        // Progress bar generation
+        let bar_width = 20;
+        let filled_blocks = (progress_ratio * bar_width as f64) as usize;
+        let empty_blocks = bar_width - filled_blocks;
+        
+        let progress_bar = format!("{}{}",
+            "█".repeat(filled_blocks),
+            "░".repeat(empty_blocks)
+        );
+        
+        // Combined display
+        print!("\r⏱️  {:02}:{:02} remaining [{}] {}%", 
+            minutes, seconds, progress_bar, percentage);
+        
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
         
         thread::sleep(Duration::from_millis(1000));
     }
     
-    println!("\r⏱️  00:00 - Time's up!");
+    println!("\r⏱️  00:00 - Time's up! [{}] 100%", "█".repeat(20));
 }
 
 fn load_config() -> Config {
